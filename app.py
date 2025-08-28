@@ -1,6 +1,6 @@
 # app.py
 # Run with: streamlit run app.py
-# Requirements: pip install streamlit pypdf sentence-transformers faiss-cpu google-generativeai watchdog
+# Requirements: pip install streamlit pypdf sentence-transformers faiss-cpu google-generativeai watchdog numpy
 # Get Gemini API key from https://aistudio.google.com/app/apikey
 
 import streamlit as st
@@ -12,6 +12,9 @@ import google.generativeai as genai
 import os
 import tempfile
 import datetime
+
+# Set page config as the first Streamlit command
+st.set_page_config(page_title="PDF Search with Gemini", page_icon="📄", layout="wide")
 
 # Constants
 EMBEDDING_MODEL = 'all-MiniLM-L6-v2'  # Fast and effective
@@ -63,7 +66,6 @@ def create_index(chunks, pdf_name):
     faiss.normalize_L2(embeddings)
     index.add(embeddings)
     
-    # Save index and chunks
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     index_path = os.path.join(INDEX_DIR, f"{pdf_name}_{timestamp}.faiss")
     chunks_path = os.path.join(INDEX_DIR, f"{pdf_name}_{timestamp}_chunks.npy")
@@ -79,7 +81,7 @@ def load_index(index_path, chunks_path):
     return index, chunks
 
 # Function to search index
-def search(query, index, chunks, top_k=5):
+def search(query, index, chunks, top_k=10):
     query_embedding = embedding_model.encode([query], convert_to_tensor=False)[0]
     faiss.normalize_L2(query_embedding.reshape(1, -1))
     distances, indices = index.search(query_embedding.reshape(1, -1), top_k)
@@ -91,9 +93,10 @@ def search(query, index, chunks, top_k=5):
     return results
 
 # Function to generate response using Gemini API
-def generate_response(query, relevant_chunks, api_key):
+def generate_response(query, relevant_chunks, api_key=None):
+    api_key = api_key or os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise ValueError("Please provide your Gemini API key in the sidebar.")
+        raise ValueError("Gemini API key not found. Set GOOGLE_API_KEY environment variable or enter it in the sidebar.")
     
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(LLM_MODEL)
@@ -129,7 +132,6 @@ Response:
         raise ValueError(f"Gemini API error: {str(e)}")
 
 # Streamlit App
-st.set_page_config(page_title="PDF Search with Gemini", page_icon="📄")
 st.title("📄 PDF Search & Query with Gemini")
 st.markdown("""
 Upload one or more PDFs, index their content, and ask natural language questions. 
@@ -141,12 +143,14 @@ st.sidebar.header("Settings")
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Get your key from https://aistudio.google.com/app/apikey")
 st.sidebar.markdown("**Note**: Ensure your Google Cloud project has billing enabled for extended API usage.")
 
-# PDF uploader (allow multiple files)
-uploaded_files = st.file_uploader("Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
-
 # Initialize session state
 if 'indexes' not in st.session_state:
     st.session_state.indexes = {}
+if 'query_history' not in st.session_state:
+    st.session_state.query_history = []
+
+# PDF uploader
+uploaded_files = st.file_uploader("Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
     try:
@@ -186,14 +190,29 @@ if st.session_state.indexes:
                     st.markdown("### Response")
                     st.write(response)
                     
+                    # Save to query history
+                    st.session_state.query_history.append({
+                        'pdf': pdf_name,
+                        'query': query,
+                        'response': response,
+                        'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                    
                     # Show relevant chunks
                     with st.expander("View Relevant Chunks"):
                         for chunk in relevant_chunks:
                             st.write(f"**Page {chunk['page']}**: {chunk['text'][:300]}...")
             except Exception as e:
                 st.error(f"Error generating response: {str(e)}")
-else:
-    st.info("Upload a PDF to get started.")
+
+# Query history
+if st.session_state.query_history:
+    with st.expander("Query History"):
+        for entry in reversed(st.session_state.query_history):
+            st.markdown(f"**PDF**: {entry['pdf']} | **Time**: {entry['timestamp']}")
+            st.write(f"**Query**: {entry['query']}")
+            st.write(f"**Response**: {entry['response']}")
+            st.markdown("---")
 
 # Clear indexes button
 if st.session_state.indexes and st.button("Clear All Indexes"):
